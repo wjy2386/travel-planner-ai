@@ -11,6 +11,9 @@ from coze_coding_utils.runtime_ctx.context import default_headers
 from storage.memory.memory_saver import get_memory_saver
 from tools.web_search_tool import web_search_tool
 from tools.user_memory_tool import save_user_preference, get_user_profile, save_itinerary, get_user_itineraries
+from tools.weather_tool import get_weather_forecast, get_weather_alerts
+from tools.map_tool import get_distance_and_time, check_location_validity, find_nearby_locations
+from tools.booking_tool import search_hotels, search_tickets
 
 LLM_CONFIG = "config/agent_llm_config.json"
 
@@ -61,7 +64,14 @@ def build_agent(ctx=None):
             save_user_preference,
             get_user_profile,
             save_itinerary,
-            get_user_itineraries
+            get_user_itineraries,
+            get_weather_forecast,
+            get_weather_alerts,
+            get_distance_and_time,
+            check_location_validity,
+            find_nearby_locations,
+            search_hotels,
+            search_tickets
         ],
         checkpointer=get_memory_saver(),
         state_schema=AgentState,
