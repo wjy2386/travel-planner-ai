@@ -9,6 +9,8 @@ from langgraph.graph.message import add_messages
 from langchain_core.messages import AnyMessage
 from coze_coding_utils.runtime_ctx.context import default_headers
 from storage.memory.memory_saver import get_memory_saver
+from tools.web_search_tool import web_search_tool
+from tools.user_memory_tool import save_user_preference, get_user_profile, save_itinerary, get_user_itineraries
 
 LLM_CONFIG = "config/agent_llm_config.json"
 
@@ -54,7 +56,13 @@ def build_agent(ctx=None):
     return create_agent(
         model=llm,
         system_prompt=system_prompt,
-        tools=[],
+        tools=[
+            web_search_tool,
+            save_user_preference,
+            get_user_profile,
+            save_itinerary,
+            get_user_itineraries
+        ],
         checkpointer=get_memory_saver(),
         state_schema=AgentState,
     )
