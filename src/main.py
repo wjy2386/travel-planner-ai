@@ -10,7 +10,8 @@ import cozeloop
 import uvicorn
 import time
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
@@ -305,6 +306,63 @@ class GraphService:
 
 service = GraphService()
 app = FastAPI()
+
+# 挂载静态文件目录
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+@app.get("/")
+async def get_index():
+    """返回前端页面"""
+    return FileResponse("static/index.html")
+
+
+@app.post("/api/chat")
+async def chat_endpoint(request: Request):
+    """
+    聊天API端点 - 调用multi_agent系统处理用户消息
+    """
+    try:
+        ctx = new_context(method="chat", headers=request.headers)
+        run_id = ctx.run_id
+        request_context.set(ctx)
+        
+        body = await request.json()
+        message = body.get("message", "")
+        session_id = body.get("session_id", "")
+        
+        logger.info(f"Chat request: session_id={session_id}, message={message}")
+        
+        # 导入multi_agent系统
+        from agents.multi_agent import multi_agent_system
+        
+        # 构建配置
+        config = {
+            "configurable": {
+                "thread_id": session_id
+            }
+        }
+        
+        # 调用multi_agent系统
+        response = await multi_agent_system.run(message, config)
+        
+        # 获取状态
+        state = multi_agent_system.get_state()
+        stage = state.get("stage", "completed")
+        
+        return {
+            "response": response,
+            "session_id": session_id,
+            "run_id": run_id,
+            "status": stage,
+            "current_agent": state.get("current_agent", "")
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in chat endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cozeloop.flush()
 
 
 @app.post("/run")

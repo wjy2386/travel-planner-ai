@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI旅行规划助手</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>✈️ AI旅行规划助手</h1>
+            <p class="subtitle">多Agent协作系统 - 行程规划与预订</p>
+        </header>
+
+        <div class="status-bar">
+            <div class="status-indicator">
+                <span class="status-dot" id="statusDot"></span>
+                <span class="status-text" id="statusText">就绪</span>
+            </div>
+            <div class="agent-info" id="agentInfo">
+                <span class="badge" id="currentAgent">等待输入</span>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <div class="chat-container" id="chatContainer">
+                <div class="message system-message">
+                    <div class="message-content">
+                        <p>你好！我是你的AI旅行规划助手。我可以帮你：</p>
+                        <ul>
+                            <li>📍 规划旅行行程</li>
+                            <li>🏨 预订酒店</li>
+                            <li>🎫 预订门票</li>
+                        </ul>
+                        <p>请告诉我你想去哪里旅行，我会为你制定详细的行程安排！</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="input-area">
+                <div class="input-wrapper">
+                    <textarea 
+                        id="userInput" 
+                        placeholder="例如：我想去东京旅行4天，预算中等，喜欢历史文化..."
+                        rows="3"
+                    ></textarea>
+                    <button id="sendButton" class="send-button">
+                        <span class="button-text">发送</span>
+                        <span class="loading-spinner hidden"></span>
+                    </button>
+                </div>
+                <div class="quick-actions">
+                    <button class="quick-btn" onclick="setInput('我想去东京旅行4天，喜欢历史文化，预算中等')">
+                        🗼 东京4日游
+                    </button>
+                    <button class="quick-btn" onclick="setInput('我想去巴黎旅行3天，喜欢艺术和美食')">
+                        🗼 巴黎3日游
+                    </button>
+                    <button class="quick-btn" onclick="setInput('我想去云南大理旅行5天，喜欢自然风光')">
+                        🏔️ 大理5日游
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>基于LangGraph多Agent系统 | 行程Agent + 预订Agent</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
