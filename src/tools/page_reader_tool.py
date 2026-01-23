@@ -186,8 +186,12 @@ def discover_website_structure(url: str, runtime: ToolRuntime = None) -> str:
             if nav_element:
                 links = nav_element.find_all('a', href=True)
                 for link in links:
-                    href = link['href']
+                    href = link.get('href', '')
                     text = link.get_text().strip()
+                    
+                    # 确保href是字符串
+                    if not isinstance(href, str):
+                        continue
                     
                     # 补全相对URL
                     if href.startswith('/'):

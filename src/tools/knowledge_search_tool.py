@@ -11,7 +11,11 @@ from coze_coding_utils.runtime_ctx.context import Context
 def get_knowledge_client(ctx: Optional[Context] = None):
     """获取知识库客户端"""
     config = Config()
-    return KnowledgeClient(config=config, ctx=ctx if ctx else Context())
+    # 如果没有传入ctx，创建一个最小化的Context
+    if ctx is None:
+        # 创建一个最小化的Context
+        ctx = Context(run_id="unknown", space_id="unknown", project_id="unknown")
+    return KnowledgeClient(config=config, ctx=ctx)
 
 
 @tool

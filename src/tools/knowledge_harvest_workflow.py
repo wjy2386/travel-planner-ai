@@ -64,7 +64,7 @@ class KnowledgeHarvestWorkflow:
         # Step 1: 页面读取
         print("\n[Step 1] 页面读取...")
         try:
-            tool_result = extract_webpage_content.func(url, None)
+            tool_result = extract_webpage_content(url, None)
             if "skip" in tool_result:
                 result["status"] = "failed"
                 result["error"] = "页面读取失败"
@@ -265,7 +265,7 @@ class KnowledgeHarvestWorkflow:
         # Step 1: 发现网站结构
         print("\n[Step 1] 发现网站结构...")
         try:
-            structure_result = discover_website_structure.func(base_url, None)
+            structure_result = discover_website_structure(base_url, None)
             if "skip" in structure_result:
                 print(f"  ✗ 网站结构发现失败")
                 return []

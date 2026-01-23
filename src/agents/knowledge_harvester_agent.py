@@ -94,8 +94,8 @@ def parse_with_schema(agent, url: str, schema_type: str, page_content: str = Non
     
     # 如果没有提供网页内容，先提取
     if not page_content:
-        # 模拟调用工具
-        tool_result = extract_webpage_content.func(url, None)
+        # 直接调用工具函数
+        tool_result = extract_webpage_content(url, None)
         if "skip" in tool_result:
             return {"status": "skip", "reason": "网页内容提取失败"}
         

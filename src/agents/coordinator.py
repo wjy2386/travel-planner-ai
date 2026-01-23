@@ -1,43 +1,87 @@
 """
-协调器 - 管理行程Agent和预订Agent的协作
+总控Agent (Orchestrator Agent)
+
+职责：
+- 理解用户意图
+- 决定调用哪些Agent
+- 控制协调流程（规划→校验→交付）
+- 处理校验失败和重试逻辑
+- 不干具体工作（不写行程、不查资料、不跟客户聊细节）
+
+定位：资深定制游项目经理角色
 """
 
 import json
-from typing import TypedDict, Optional, Literal
+import logging
+import re
+from typing import TypedDict, Optional, Literal, Dict, Any
 from langchain_core.messages import HumanMessage, SystemMessage
+
+# 导入各个Agent
 from agents.itinerary_agent import build_itinerary_agent
-from agents.booking_agent import build_booking_agent, parse_itinerary_for_booking
+from agents.validation_agent import build_validation_agent, validate_itinerary
+from agents.delivery_agent import build_delivery_agent, deliver_itinerary
+
+# 设置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class CoordinatorState(TypedDict):
     """协调器状态"""
-    stage: Literal["collect_info", "planning", "booking", "completed", "error"]
+    stage: Literal["analysis", "planning", "validation", "delivery", "completed", "error"]
     user_input: str
+    user_context: Optional[dict]
     itinerary_json: Optional[dict]
-    booking_results: Optional[dict]
-    current_agent: Optional[str]
+    validation_result: Optional[dict]
+    retry_count: int
+    max_retries: int
     error_message: Optional[str]
 
 
-class TravelCoordinator:
-    """旅行协调器 - 管理多Agent协作"""
+class TravelOrchestrator:
+    """旅行总控Agent - 管理多Agent协作流程"""
     
     def __init__(self):
-        """初始化协调器"""
+        """初始化总控Agent"""
         self.itinerary_agent = build_itinerary_agent()
-        self.booking_agent = build_booking_agent()
+        self.validation_agent = build_validation_agent()
+        self.delivery_agent = build_delivery_agent()
+        
         self.state = CoordinatorState(
-            stage="collect_info",
+            stage="analysis",
             user_input="",
+            user_context=None,
             itinerary_json=None,
-            booking_results=None,
-            current_agent=None,
+            validation_result=None,
+            retry_count=0,
+            max_retries=3,
+            error_message=None
+        )
+    
+    def reset(self):
+        """重置协调器状态"""
+        self.state = CoordinatorState(
+            stage="analysis",
+            user_input="",
+            user_context=None,
+            itinerary_json=None,
+            validation_result=None,
+            retry_count=0,
+            max_retries=3,
             error_message=None
         )
     
     async def process_user_request(self, user_input: str, config: dict = None) -> str:
         """
-        处理用户请求
+        处理用户请求（主流程）
+        
+        流程：
+        1. Analysis - 理解用户意图，提取关键信息
+        2. Planning - 调用Itinerary Agent生成行程草案
+        3. Validation - 调用Validation Agent校验可行性
+        4. 如果校验不通过 → 重新规划（最多重试3次）
+        5. Delivery - 调用Delivery Agent生成用户友好输出
         
         Args:
             user_input: 用户输入（自然语言）
@@ -49,226 +93,373 @@ class TravelCoordinator:
         try:
             self.state["user_input"] = user_input
             
-            # 判断当前阶段
-            if self.state["stage"] == "collect_info":
-                return await self._handle_collect_info(user_input, config)
-            elif self.state["stage"] == "planning":
-                return await self._handle_planning(user_input, config)
-            elif self.state["stage"] == "booking":
-                return await self._handle_booking(user_input, config)
-            else:
-                return self._get_completion_summary()
+            logger.info(f"[Orchestrator] 开始处理用户请求: {user_input[:50]}...")
+            
+            # Step 1: 意图分析
+            logger.info("[Orchestrator] Step 1: 分析用户意图...")
+            user_context = await self._analyze_intent(user_input)
+            self.state["user_context"] = user_context
+            
+            if not user_context or user_context.get("status") == "error":
+                error_msg = user_context.get("error", "无法理解您的需求，请重新描述") if user_context else "无法理解您的需求"
+                self.state["stage"] = "error"
+                self.state["error_message"] = error_msg
+                return self._format_error_response(error_msg)
+            
+            # Step 2: 行程规划
+            logger.info("[Orchestrator] Step 2: 调用行程规划Agent...")
+            self.state["stage"] = "planning"
+            itinerary_result = await self._plan_itinerary(user_input, user_context, config)
+            
+            if not itinerary_result:
+                error_msg = "行程规划失败，请稍后重试"
+                self.state["stage"] = "error"
+                self.state["error_message"] = error_msg
+                return self._format_error_response(error_msg)
+            
+            self.state["itinerary_json"] = itinerary_result
+            
+            # Step 3: 可行性校验（循环直到通过或达到最大重试次数）
+            self.state["stage"] = "validation"
+            self.state["retry_count"] = 0
+            
+            while self.state["retry_count"] < self.state["max_retries"]:
+                logger.info(f"[Orchestrator] Step 3: 校验行程可行性 (尝试 {self.state['retry_count'] + 1}/{self.state['max_retries']})...")
                 
+                validation_result = await self._validate_itinerary(itinerary_result, user_context)
+                self.state["validation_result"] = validation_result
+                
+                # 判断校验结果
+                if validation_result.get("status") == "passed":
+                    logger.info("[Orchestrator] 校验通过！")
+                    break
+                elif validation_result.get("status") == "warning":
+                    logger.warning(f"[Orchestrator] 校验警告: {validation_result.get('summary', '')}")
+                    # 警告级别可以继续，但需要调整
+                    # 这里我们选择继续交付，但会在Delivery中标注警告
+                    break
+                else:
+                    # 校验失败，需要重新规划
+                    logger.warning(f"[Orchestrator] 校验失败: {validation_result.get('summary', '')}")
+                    self.state["retry_count"] += 1
+                    
+                    if self.state["retry_count"] >= self.state["max_retries"]:
+                        error_msg = "行程调整失败，已达到最大重试次数。请稍后重试或联系人工客服。"
+                        self.state["stage"] = "error"
+                        self.state["error_message"] = error_msg
+                        return self._format_error_response(error_msg)
+                    
+                    # 重新规划
+                    logger.info(f"[Orchestrator] 重新规划行程 (第 {self.state['retry_count']} 次)...")
+                    itinerary_result = await self._replan_itinerary(
+                        user_input,
+                        user_context,
+                        validation_result,
+                        config
+                    )
+                    self.state["itinerary_json"] = itinerary_result
+            
+            # Step 4: 交付给用户
+            logger.info("[Orchestrator] Step 4: 生成用户友好输出...")
+            self.state["stage"] = "delivery"
+            delivery_result = await self._deliver_itinerary(itinerary_result, validation_result, user_context)
+            
+            self.state["stage"] = "completed"
+            logger.info("[Orchestrator] 处理完成！")
+            
+            return delivery_result
+            
         except Exception as e:
+            logger.error(f"[Orchestrator] 处理请求时出错: {str(e)}", exc_info=True)
             self.state["stage"] = "error"
             self.state["error_message"] = str(e)
-            return f"❌ 处理请求时出错: {str(e)}"
+            return self._format_error_response(str(e))
     
-    async def _handle_collect_info(self, user_input: str, config: dict) -> str:
-        """处理信息收集阶段"""
-        # 检查信息是否完整
-        # 这里简化处理，直接进入规划阶段
-        # 实际中可以要求用户提供更多信息（如姓名、联系方式等）
+    async def _analyze_intent(self, user_input: str) -> dict:
+        """
+        分析用户意图，提取关键信息
         
-        self.state["stage"] = "planning"
-        self.state["current_agent"] = "itinerary_agent"
+        使用简单规则提取，避免调用额外的LLM
         
-        return await self._handle_planning(user_input, config)
-    
-    async def _handle_planning(self, user_input: str, config: dict) -> str:
-        """处理行程规划阶段"""
-        self.state["current_agent"] = "itinerary_agent"
-        
+        Returns:
+            用户上下文字典
+        """
         try:
-            # 调用行程Agent生成行程
-            messages = [HumanMessage(content=user_input)]
-            itinerary_result = await self.itinerary_agent.ainvoke(
-                {"messages": messages},
-                config=config
-            )
+            user_context = {
+                "status": "success",
+                "destination": "",
+                "days": 0,
+                "dates": "",
+                "travelers": 1,
+                "preferences": [],
+                "budget": "",
+                "pace": "",
+                "special_requirements": ""
+            }
             
-            # 获取行程JSON（尝试从响应中提取）
-            # 这里简化处理，实际中需要解析Agent输出，提取JSON
-            itinerary_response = itinerary_result["messages"][-1].content
+            # 提取目的地
+            # 常见城市列表
+            cities = ["东京", "京都", "大阪", "北海道", "富良野", "奈良", "横滨", "镰仓", "箱根", "名古屋", "福冈", "广岛", "冲绳", "首尔", "釜山", "济州", "曼谷", "清迈", "新加坡", "吉隆坡", "巴厘岛", "普吉岛", "伦敦", "巴黎", "罗马", "巴塞罗那", "纽约", "洛杉矶", "旧金山", "温哥华", "多伦多", "悉尼", "墨尔本"]
+            for city in cities:
+                if city in user_input:
+                    user_context["destination"] = city
+                    break
             
-            # 模拟提取JSON（实际中需要更复杂的解析逻辑）
-            # 假设行程Agent会返回JSON格式的行程
-            self.state["itinerary_json"] = self._extract_itinerary_json(itinerary_response)
+            # 提取天数
+            day_match = re.search(r'(\d+)\s*[天日]', user_input)
+            if day_match:
+                user_context["days"] = int(day_match.group(1))
             
-            # 进入预订阶段
-            self.state["stage"] = "booking"
+            # 提取人数
+            person_match = re.search(r'(\d+)\s*[个人人]', user_input)
+            if person_match:
+                user_context["travelers"] = int(person_match.group(1))
             
-            result = f"""✅ 行程规划完成
-
-{itinerary_response}
-
----
-
-接下来是否需要我为您预订酒店和门票？
-- 回复"是的"或"确认预订"继续
-- 回复"不需要"或"我自己预订"结束流程
-"""
-            return result
+            # 提取偏好
+            preferences = []
+            if "历史" in user_input or "文化" in user_input:
+                preferences.append("历史文化")
+            if "美食" in user_input or "吃" in user_input:
+                preferences.append("美食")
+            if "摄影" in user_input or "拍照" in user_input:
+                preferences.append("摄影")
+            if "购物" in user_input or "买" in user_input:
+                preferences.append("购物")
+            if "自然" in user_input or "风景" in user_input:
+                preferences.append("自然风光")
+            if "亲子" in user_input or "孩子" in user_input:
+                preferences.append("亲子")
+            if "浪漫" in user_input or "情侣" in user_input:
+                preferences.append("浪漫")
+            if "户外" in user_input or "运动" in user_input:
+                preferences.append("户外运动")
+            user_context["preferences"] = preferences
+            
+            # 提取节奏
+            if "不赶" in user_input or "慢" in user_input or "宽松" in user_input:
+                user_context["pace"] = "宽松"
+            elif "紧凑" in user_input or "赶" in user_input:
+                user_context["pace"] = "紧凑"
+            else:
+                user_context["pace"] = "适中"
+            
+            # 如果没有提取到目的地，默认为空（让Agent自己推断）
+            if not user_context["destination"]:
+                logger.warning("[Orchestrator] 未能提取目的地信息")
+            
+            logger.info(f"[Orchestrator] 提取到的用户上下文: {user_context}")
+            return user_context
             
         except Exception as e:
-            self.state["error_message"] = str(e)
-            return f"❌ 行程规划失败: {str(e)}"
+            logger.error(f"[Orchestrator] 意图分析异常: {str(e)}", exc_info=True)
+            return {"status": "error", "error": str(e)}
     
-    async def _handle_booking(self, user_input: str, config: dict) -> str:
-        """处理预订阶段"""
-        self.state["current_agent"] = "booking_agent"
+    async def _plan_itinerary(self, user_input: str, user_context: dict, config: dict) -> dict:
+        """
+        调用行程规划Agent生成行程草案
         
-        # 检查用户是否确认预订
-        confirm_keywords = ["是的", "确认", "预订", "好的", "ok", "yes"]
-        cancel_keywords = ["不需要", "取消", "我自己", "no", "不需要"]
-        
-        user_input_lower = user_input.lower()
-        
-        if any(keyword in user_input_lower for keyword in cancel_keywords):
-            self.state["stage"] = "completed"
-            return self._get_completion_summary()
-        
-        if not any(keyword in user_input_lower for keyword in confirm_keywords):
-            return "请确认是否需要预订酒店和门票。回复\"是的\"继续预订，或\"不需要\"结束流程。"
-        
+        Returns:
+            行程JSON
+        """
         try:
-            # 构建预订请求
-            if not self.state["itinerary_json"]:
-                return "❌ 没有行程信息，无法执行预订。"
+            # 构建规划提示
+            planning_prompt = f"""请根据以下需求规划旅行行程。
+
+{json.dumps(user_context, ensure_ascii=False, indent=2)}
+
+请生成结构化的行程方案，包含每天的景点、住宿、交通安排。"""
             
-            booking_request = parse_itinerary_for_booking(self.state["itinerary_json"])
+            # 调用行程Agent
+            messages = [HumanMessage(content=planning_prompt)]
             
-            # 构建预订提示
-            booking_prompt = self._build_booking_prompt(booking_request)
+            # 构建config，确保包含thread_id
+            agent_config = config or {}
+            if "configurable" not in agent_config:
+                agent_config["configurable"] = {}
+            if "thread_id" not in agent_config["configurable"]:
+                agent_config["configurable"]["thread_id"] = f"itinerary_{self.state['user_input'][:20]}"
             
-            # 调用预订Agent执行预订
-            messages = [HumanMessage(content=booking_prompt)]
-            booking_result = await self.booking_agent.ainvoke(
+            itinerary_response = await self.itinerary_agent.ainvoke(
                 {"messages": messages},
-                config=config
+                config=agent_config
             )
             
-            booking_response = booking_result["messages"][-1].content
-            self.state["booking_results"] = booking_response
+            # 提取行程JSON
+            # 这里简化处理，实际中需要从Agent响应中提取JSON
+            # 假设行程Agent会返回包含JSON的响应
+            content = itinerary_response["messages"][-1].content
             
-            # 完成流程
-            self.state["stage"] = "completed"
+            # 尝试从响应中提取JSON
+            itinerary_json = self._extract_itinerary_json(content)
             
-            result = f"""✅ 预订完成
-
-{booking_response}
-
----
-
-{self._get_completion_summary()}
-"""
-            return result
+            return itinerary_json
             
         except Exception as e:
-            self.state["error_message"] = str(e)
-            return f"❌ 预订失败: {str(e)}"
+            logger.error(f"[Orchestrator] 行程规划失败: {str(e)}", exc_info=True)
+            return None
     
-    def _extract_itinerary_json(self, response: str) -> dict:
-        """从Agent响应中提取行程JSON"""
-        # 简化处理：尝试从响应中提取JSON
-        # 实际中需要更复杂的解析逻辑，或者让Agent直接输出JSON
+    async def _replan_itinerary(
+        self,
+        user_input: str,
+        user_context: dict,
+        validation_result: dict,
+        config: dict
+    ) -> dict:
+        """
+        根据校验反馈重新规划行程
         
-        # 这里返回一个模拟的行程JSON
-        return {
-            "user_profile": {
-                "departure": "出发地",
-                "destination": "东京",
-                "dates": "2025-04-01至2025-04-04",
-                "days": 4,
-                "travelers": 2,
-                "travel_tier": "小资",
-                "preferences": ["历史文化"]
-            },
-            "itinerary": [
-                {
-                    "day": 1,
-                    "theme": "江户历史探索日",
-                    "accommodation": {
-                        "hotel_name": "浅草华盛顿酒店",
-                        "city": "东京",
-                        "check_in_date": "2025-04-01",
-                        "check_out_date": "2025-04-04"
-                    }
-                }
-            ]
-        }
-    
-    def _build_booking_prompt(self, booking_request: dict) -> str:
-        """构建预订提示"""
-        prompt = """请为以下行程执行预订操作：
+        Args:
+            validation_result: 校验结果，包含问题和建议
+        
+        Returns:
+            调整后的行程JSON
+        """
+        try:
+            # 构建重规划提示
+            issues = validation_result.get("issues", [])
+            suggestions = validation_result.get("suggestions", "")
+            
+            replan_prompt = f"""请根据以下反馈调整行程方案。
 
-"""
-        
-        if booking_request.get("accommodation"):
-            acc = booking_request["accommodation"]
-            prompt += f"""1. 酒店预订
-- 酒店: {acc.get('hotel_name')}
-- 城市: {acc.get('city')}
-- 入住日期: {acc.get('check_in_date')}
-- 退房日期: {acc.get('check_out_date')}
-"""
-        
-        if booking_request.get("tickets"):
-            prompt += "\\n2. 门票预订\\n"
-            for i, ticket in enumerate(booking_request["tickets"], 1):
-                prompt += f"""
-{i}. 景点: {ticket.get('attraction_name')}
-- 参观日期: {ticket.get('visit_date')}
-- 参观人数: {ticket.get('visitors')}
-- 票种: {ticket.get('ticket_type')}
-"""
-        
-        prompt += """
-请使用相应的工具执行预订操作。
-"""
-        return prompt
-    
-    def _get_completion_summary(self) -> str:
-        """获取完成总结"""
-        summary = """## 🎉 服务完成
+## 原始需求
+{json.dumps(user_context, ensure_ascii=False, indent=2)}
 
-您的旅行规划服务已完成！
+## 校验反馈
+**问题**:
+{json.dumps(issues, ensure_ascii=False, indent=2)}
 
-**服务内容**:
-"""
-        
-        if self.state["itinerary_json"]:
-            summary += "- ✅ 行程规划: 已完成\n"
-        
-        if self.state["booking_results"]:
-            summary += "- ✅ 预订服务: 已完成\n"
-        else:
-            summary += "- ⏸️ 预订服务: 未执行（用户自行预订）\n"
-        
-        summary += "\n**温馨提示**:\n"
-        summary += "- 出发前建议再次确认天气和景点开放时间\n"
-        summary += "- 保存好预订订单号，以备查询和使用\n"
-        summary += "- 如有需要，随时联系我调整行程或查询订单\n\n"
-        
-        summary += "祝您旅途愉快！✨"
-        
-        return summary
+**建议**:
+{suggestions}
+
+请根据这些反馈调整行程，确保解决所有严重问题。"""
+            
+            # 调用行程Agent重新规划
+            messages = [HumanMessage(content=replan_prompt)]
+            
+            # 构建config，确保包含thread_id
+            agent_config = config or {}
+            if "configurable" not in agent_config:
+                agent_config["configurable"] = {}
+            if "thread_id" not in agent_config["configurable"]:
+                agent_config["configurable"]["thread_id"] = f"itinerary_replan_{self.state['retry_count']}"
+            
+            itinerary_response = await self.itinerary_agent.ainvoke(
+                {"messages": messages},
+                config=agent_config
+            )
+            
+            # 提取行程JSON
+            content = itinerary_response["messages"][-1].content
+            itinerary_json = self._extract_itinerary_json(content)
+            
+            return itinerary_json
+            
+        except Exception as e:
+            logger.error(f"[Orchestrator] 行程重规划失败: {str(e)}", exc_info=True)
+            return None
     
-    def get_state(self) -> CoordinatorState:
+    async def _validate_itinerary(self, itinerary_json: dict, user_context: dict) -> dict:
+        """
+        调用校验Agent校验行程可行性
+        
+        Returns:
+            校验结果字典
+        """
+        try:
+            validation_result = validate_itinerary(
+                self.validation_agent,
+                itinerary_json,
+                user_context
+            )
+            return validation_result
+            
+        except Exception as e:
+            logger.error(f"[Orchestrator] 行程校验失败: {str(e)}", exc_info=True)
+            return {
+                "status": "failed",
+                "score": 0,
+                "issues": [{"type": "system_error", "severity": "high", "description": str(e)}],
+                "summary": "校验系统异常",
+                "needs_adjustment": True
+            }
+    
+    async def _deliver_itinerary(
+        self,
+        itinerary_json: dict,
+        validation_result: dict,
+        user_context: dict
+    ) -> str:
+        """
+        调用交付Agent生成用户友好输出
+        
+        Returns:
+            Markdown格式的行程说明
+        """
+        try:
+            delivery_result = deliver_itinerary(
+                self.delivery_agent,
+                itinerary_json,
+                validation_result,
+                user_context
+            )
+            
+            return delivery_result.get("content", "行程说明生成失败")
+            
+        except Exception as e:
+            logger.error(f"[Orchestrator] 行程交付失败: {str(e)}", exc_info=True)
+            return f"行程说明生成失败: {str(e)}"
+    
+    def _extract_itinerary_json(self, content: str) -> dict:
+        """
+        从Agent响应中提取行程JSON
+        
+        Args:
+            content: Agent响应内容
+        
+        Returns:
+            行程JSON字典
+        """
+        try:
+            # 尝试直接解析JSON
+            content = content.strip()
+            
+            # 移除可能的markdown代码块标记
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            
+            content = content.strip()
+            
+            return json.loads(content)
+            
+        except json.JSONDecodeError:
+            # 如果解析失败，返回一个模拟的结构
+            logger.warning("[Orchestrator] 无法提取行程JSON，返回模拟数据")
+            return {
+                "status": "draft",
+                "message": "行程草案（未能解析为结构化数据）",
+                "raw_content": content
+            }
+    
+    def _format_error_response(self, error_msg: str) -> str:
+        """格式化错误响应"""
+        return f"""❌ 处理失败
+
+{error_msg}
+
+请稍后重试或联系人工客服。"""
+    
+    def get_state(self) -> dict:
         """获取当前状态"""
-        return self.state
-    
-    def reset(self):
-        """重置协调器状态"""
-        self.state = CoordinatorState(
-            stage="collect_info",
-            user_input="",
-            itinerary_json=None,
-            booking_results=None,
-            current_agent=None,
-            error_message=None
-        )
+        return dict(self.state)
 
 
 # 创建全局协调器实例
-coordinator = TravelCoordinator()
+orchestrator = TravelOrchestrator()
+
+
+# 兼容原有接口
+coordinator = orchestrator
