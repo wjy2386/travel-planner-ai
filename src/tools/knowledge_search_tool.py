@@ -41,10 +41,9 @@ def search_travel_knowledge(query: str, runtime: ToolRuntime = None) -> str:
     client = get_knowledge_client(ctx)
     
     try:
-        # 搜索旅行知识库（top_k=5，获取最相关的5条）
+        # 搜索旅行知识库（不指定table_names，搜索所有数据集）
         response = client.search(
             query=query,
-            table_names=["travel_knowledge"],  # 搜索旅行知识库
             top_k=5,
             min_score=0.6  # 相关度阈值0.6
         )
@@ -94,7 +93,6 @@ def search_destination_guide(destination: str, runtime: ToolRuntime = None) -> s
         
         response = client.search(
             query=query,
-            table_names=["travel_knowledge"],
             top_k=8,
             min_score=0.5
         )
@@ -149,7 +147,6 @@ def search_seasonal_info(destination: str, season: Optional[str] = None, runtime
         
         response = client.search(
             query=query,
-            table_names=["travel_knowledge"],
             top_k=5,
             min_score=0.6
         )
