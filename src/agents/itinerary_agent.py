@@ -18,6 +18,11 @@ from tools.user_memory_tool import save_user_preference, get_user_profile, save_
 from tools.weather_tool import get_weather_forecast, get_weather_alerts
 from tools.map_tool import get_distance_and_time, check_location_validity, find_nearby_locations
 from tools.booking_tool import search_hotels, search_tickets
+from tools.knowledge_search_tool import (
+    search_travel_knowledge,
+    search_destination_guide,
+    search_seasonal_info
+)
 
 ITINERARY_AGENT_CONFIG = "config/agent_llm_config.json"
 
@@ -65,16 +70,25 @@ def build_itinerary_agent(ctx=None):
         model=llm,
         system_prompt=system_prompt,
         tools=[
+            # 知识库工具（优先使用）
+            search_destination_guide,
+            search_seasonal_info,
+            search_travel_knowledge,
+            # 联网搜索工具
             web_search_tool,
+            # 用户记忆工具
             save_user_preference,
             get_user_profile,
             save_itinerary,
             get_user_itineraries,
+            # 天气工具
             get_weather_forecast,
             get_weather_alerts,
+            # 地图工具
             get_distance_and_time,
             check_location_validity,
             find_nearby_locations,
+            # 预订查询工具
             search_hotels,
             search_tickets
         ],
