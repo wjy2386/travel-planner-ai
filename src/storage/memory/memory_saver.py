@@ -101,19 +101,21 @@ class MemoryManager:
         if not self._setup_schema_and_tables(db_url):
             return self._create_fallback_checkpointer()
 
-        # 3. 连接字符串加上 search_path
+        # 3. 连接字符串加上 search_path 和超时参数
+        timeout_params = "options=-csearch_path%3Dmemory%20-c%20statement_timeout%3D60000%20-c%20idle_in_transaction_session_timeout%3D30000"
         if "?" in db_url:
-            db_url = f"{db_url}&options=-csearch_path%3Dmemory"
+            db_url = f"{db_url}&{timeout_params}"
         else:
-            db_url = f"{db_url}?options=-csearch_path%3Dmemory"
+            db_url = f"{db_url}?{timeout_params}"
 
-        # 4. 尝试创建连接池和 checkpointer
+        # 4. 尝试创建连接池和 checkpointer（优化连接池参数）
         try:
             self._pool = AsyncConnectionPool(
                 conninfo=db_url,
                 timeout=DB_CONNECTION_TIMEOUT,
                 min_size=1,
-                max_idle=300,
+                max_idle=60,  # 减少最大空闲时间到60秒
+                max_lifetime=300,  # 连接最大生命周期5分钟
             )
             self._checkpointer = AsyncPostgresSaver(self._pool)
             logger.info("AsyncPostgresSaver initialized successfully")
