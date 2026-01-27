@@ -101,8 +101,8 @@ class MemoryManager:
         if not self._setup_schema_and_tables(db_url):
             return self._create_fallback_checkpointer()
 
-        # 3. 连接字符串加上 search_path 和超时参数
-        timeout_params = "options=-csearch_path%3Dmemory%20-c%20statement_timeout%3D60000%20-c%20idle_in_transaction_session_timeout%3D30000"
+        # 3. 连接字符串加上 search_path 和超时参数（更严格的超时控制）
+        timeout_params = "options=-csearch_path%3Dmemory%20-c%20statement_timeout%3D30000%20-c%20idle_in_transaction_session_timeout%3D20000%20-c%20lock_timeout%3D10000"
         if "?" in db_url:
             db_url = f"{db_url}&{timeout_params}"
         else:
@@ -114,9 +114,23 @@ class MemoryManager:
                 conninfo=db_url,
                 timeout=DB_CONNECTION_TIMEOUT,
                 min_size=1,
+                max_size=5,  # 限制最大连接数，避免过多连接占用
                 max_idle=60,  # 减少最大空闲时间到60秒
                 max_lifetime=300,  # 连接最大生命周期5分钟
             )
+            # 修复deprecation warning：使用context manager或显式调用open()
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # 如果event loop正在运行，使用create_task
+                    asyncio.create_task(self._pool.open())
+                else:
+                    # 如果event loop未运行，使用run_until_complete
+                    loop.run_until_complete(self._pool.open())
+            except Exception as pool_open_error:
+                logger.warning(f"Failed to open connection pool: {pool_open_error}, using pool directly")
+            
             self._checkpointer = AsyncPostgresSaver(self._pool)
             logger.info("AsyncPostgresSaver initialized successfully")
         except Exception as e:

@@ -43,10 +43,10 @@ def _create_engine_with_retry():
     if url is None or url == "":
         logger.error("PGDATABASE_URL is not set")
         raise ValueError("PGDATABASE_URL is not set")
-    size = 10  # 减小连接池大小，避免过多连接占用
-    overflow = 20
-    recycle = 600  # 减少回收时间到10分钟
-    timeout = 10  # 减少超时时间到10秒
+    size = 5  # 进一步减小连接池大小，从10降到5
+    overflow = 10  # 减少溢出连接数，从20降到10
+    recycle = 300  # 减少回收时间到5分钟，从600秒降到300秒
+    timeout = 5  # 进一步减少超时时间到5秒
     engine = create_engine(
         url,
         pool_size=size,
@@ -55,8 +55,8 @@ def _create_engine_with_retry():
         pool_recycle=recycle,
         pool_timeout=timeout,
         connect_args={
-            "connect_timeout": 10,
-            "options": "-c statement_timeout=30000"  # 设置查询超时30秒
+            "connect_timeout": 5,  # 减少连接超时到5秒
+            "options": "-c statement_timeout=30000 -c idle_in_transaction_session_timeout=20000 -c lock_timeout=10000"  # 添加更多超时控制
         }
     )
     # 验证连接，带重试
